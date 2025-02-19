@@ -1,3 +1,7 @@
+models = [
+    "google/gemini-2.0-flash-001",
+    "deepseek/deepseek-chat"
+]
 from langchain.prompts import PromptTemplate
 from langchain.chains import LLMChain
 from langchain.memory import ConversationBufferMemory
@@ -7,7 +11,7 @@ import os
 class TeachingAgent:
     def __init__(self, topic="order words"):
         self.llm = ChatOpenAI(
-            model="deepseek/deepseek-chat",
+            model="google/gemini-2.0-flash-001",
             base_url="https://openrouter.ai/api/v1",
             api_key=os.getenv("OPEN_ROUTER_KEY")
         )
@@ -30,6 +34,7 @@ class TeachingAgent:
             template="""
             Based on the previous explanation of {topic}, provide 2-3 practical examples.
             Make the examples relatable to everyday situations.
+            Make sure to provide different examples than before if any were given.
             Previous conversation: {chat_history}
             """
         )
@@ -38,9 +43,19 @@ class TeachingAgent:
         self.quiz_prompt = PromptTemplate(
             input_variables=["topic", "chat_history"],
             template="""
-            Based on the explanation and examples of {topic}, create a simple quiz question.
-            Make it multiple choice (a, b, c).
-            Make sure it tests understanding, not just memorization.
+            Create a multiple choice question to test understanding of {topic}.
+            Include three options (a, b, c) where only one is correct.
+            Structure your response in the following format:
+            QUESTION: (the question text)
+            OPTIONS:
+            a) (first option)
+            b) (second option)
+            c) (third option)
+            CORRECT_ANSWER: (just the letter of the correct answer)
+            EXPLANATION: (why this is the correct answer)
+            HINT: (a helpful hint that doesn't give away the answer)
+
+            Make sure the incorrect options are plausible but clearly wrong when thinking carefully.
             Previous conversation: {chat_history}
             """
         )
@@ -63,6 +78,79 @@ class TeachingAgent:
             prompt=self.quiz_prompt,
             memory=self.memory
         )
+
+    def parse_quiz_response(self, response):
+        """Parse the quiz response from LLM into components"""
+        lines = response.split('\n')
+        quiz_data = {
+            'question': '',
+            'options': {},
+            'correct_answer': '',
+            'explanation': '',
+            'hint': ''
+        }
+        
+        current_section = None
+        
+        for line in lines:
+            line = line.strip()
+            if line.startswith('QUESTION:'):
+                current_section = 'question'
+                quiz_data['question'] = line.replace('QUESTION:', '').strip()
+            elif line.startswith('OPTIONS:'):
+                current_section = 'options'
+            elif line.startswith('CORRECT_ANSWER:'):
+                quiz_data['correct_answer'] = line.replace('CORRECT_ANSWER:', '').strip().lower()
+            elif line.startswith('EXPLANATION:'):
+                current_section = 'explanation'
+                quiz_data['explanation'] = line.replace('EXPLANATION:', '').strip()
+            elif line.startswith('HINT:'):
+                quiz_data['hint'] = line.replace('HINT:', '').strip()
+            elif line.startswith(('a)', 'b)', 'c)')) and current_section == 'options':
+                option = line[0]
+                quiz_data['options'][option] = line[2:].strip()
+                
+        return quiz_data
+
+    def conduct_quiz(self):
+        """Conduct an interactive quiz with multiple attempts and hints"""
+        # Get quiz from LLM
+        quiz_response = self.quiz_chain.run(topic=self.topic)
+        quiz_data = self.parse_quiz_response(quiz_response)
+        
+        # Display question and options
+        print("\nQuiz Question:")
+        print(quiz_data['question'])
+        print("\nOptions:")
+        for option, text in quiz_data['options'].items():
+            print(f"{option}) {text}")
+        
+        # First attempt
+        answer = input("\nYour answer (a/b/c): ").lower()
+        
+        if answer == quiz_data['correct_answer']:
+            print("\nCorrect! Well done!")
+            print("Explanation:", quiz_data['explanation'])
+            return True
+        else:
+            print("\nThat's not quite right. Would you like a hint? (yes/no)")
+            want_hint = input().lower()
+            
+            if want_hint == 'yes':
+                print("\nHint:", quiz_data['hint'])
+            
+            # Second attempt
+            print("\nTry one more time!")
+            answer = input("Your answer (a/b/c): ").lower()
+            
+            if answer == quiz_data['correct_answer']:
+                print("\nCorrect! You got it on the second try!")
+                print("Explanation:", quiz_data['explanation'])
+                return True
+            else:
+                print("\nIncorrect. The correct answer was:", quiz_data['correct_answer'])
+                print("Explanation:", quiz_data['explanation'])
+                return False
 
     def start_lesson(self):
         while True:
@@ -96,24 +184,38 @@ class TeachingAgent:
                 examples = self.example_chain.run(topic=self.topic)
                 print(examples)
                 
-                # Step 4: Quiz
-                print("\nNow, let's test your understanding with a quiz question:")
-                quiz = self.quiz_chain.run(topic=self.topic)
-                print(quiz)
-                
-                answer = input("\nYour answer (a/b/c): ").lower()
-                
-                # Note: In a real implementation, you'd want to have the LLM 
-                # generate the correct answer and verify against it
-                print("\nThank you for your answer! Would you like to:")
-                print("1. Start over")
-                print("2. Quit")
-                
-                choice = input("Enter your choice (1 or 2): ")
-                if choice == '2':
-                    print("Goodbye!")
-                    break
+                while True:
+                    # Step 4: Ask what they want to do next
+                    print("\nWhat would you like to do next?")
+                    print("1. See more examples")
+                    print("2. Take a quiz")
+                    print("3. End lesson")
+                    
+                    choice = input("Enter your choice (1/2/3): ")
+                    
+                    if choice == '1':
+                        print("\nHere are some more examples...")
+                        examples = self.example_chain.run(topic=self.topic)
+                        print(examples)
+                    elif choice == '2':
+                        print("\nLet's test your understanding with a quiz!")
+                        quiz_result = self.conduct_quiz()
+                        
+                        print("\nWould you like to:")
+                        print("1. Continue learning")
+                        print("2. End lesson")
+                        
+                        end_choice = input("Enter your choice (1/2): ")
+                        if end_choice == '2':
+                            print("Goodbye!")
+                            return
+                        break
+                    elif choice == '3':
+                        print("Goodbye!")
+                        return
+                    else:
+                        print("Invalid choice. Please enter 1, 2, or 3.")
 
 # Create and run the teaching agent
-agent = TeachingAgent(topic="order words")
+agent = TeachingAgent()
 agent.start_lesson()
