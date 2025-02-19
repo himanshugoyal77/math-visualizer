@@ -2,6 +2,7 @@ models = [
     "google/gemini-2.0-flash-001",
     "deepseek/deepseek-chat"
 ]
+
 from langchain.prompts import PromptTemplate
 from langchain.chains import LLMChain
 from langchain.memory import ConversationBufferMemory
@@ -9,14 +10,23 @@ from langchain_openai import ChatOpenAI
 import os
 
 class TeachingAgent:
-    def __init__(self, topic="order words"):
+    def __init__(self):
         self.llm = ChatOpenAI(
-            model="google/gemini-2.0-flash-001",
+            model='google/gemini-2.0-flash-001',
             base_url="https://openrouter.ai/api/v1",
             api_key=os.getenv("OPEN_ROUTER_KEY")
         )
         self.memory = ConversationBufferMemory(memory_key="chat_history")
-        self.topic = topic
+        
+        # Topic validation prompt
+        self.topic_validation_prompt = PromptTemplate(
+            input_variables=["topic"],
+            template="""
+            Evaluate if {topic} is a valid educational topic that can be taught.
+            If it is valid, respond with "VALID: " followed by a cleaned up version of the topic name.
+            If it is not valid or too broad, respond with "INVALID: " followed by a brief explanation why.
+            """
+        )
         
         # Initial explanation prompt
         self.explain_prompt = PromptTemplate(
@@ -61,6 +71,11 @@ class TeachingAgent:
         )
         
         # Initialize chains
+        self.topic_validation_chain = LLMChain(
+            llm=self.llm,
+            prompt=self.topic_validation_prompt
+        )
+        
         self.explain_chain = LLMChain(
             llm=self.llm,
             prompt=self.explain_prompt,
@@ -79,6 +94,32 @@ class TeachingAgent:
             memory=self.memory
         )
 
+    def validate_topic(self, topic):
+        """Validate if the topic is appropriate for teaching"""
+        response = self.topic_validation_chain.run(topic=topic)
+        if response.startswith("VALID:"):
+            return True, response[6:].strip()
+        return False, response[8:].strip()
+
+    def get_topic(self):
+        """Get and validate topic from user"""
+        while True:
+            print("\nWhat would you like to learn about?")
+            print("(Type 'quit' to exit)")
+            topic = input("Enter topic: ").strip()
+            
+            if topic.lower() == 'quit':
+                return None
+                
+            is_valid, message = self.validate_topic(topic)
+            if is_valid:
+                print(f"\nGreat! Let's learn about {message}")
+                return message
+            else:
+                print(f"\nSorry, {message}")
+                print("Please try entering a more specific or appropriate topic.")
+
+    # [Previous methods remain the same: parse_quiz_response, conduct_quiz]
     def parse_quiz_response(self, response):
         """Parse the quiz response from LLM into components"""
         lines = response.split('\n')
@@ -154,67 +195,72 @@ class TeachingAgent:
 
     def start_lesson(self):
         while True:
-            command = input("Enter 'start' to begin the lesson or 'quit' to exit: ").lower()
-            
-            if command == 'quit':
+            self.topic = self.get_topic()
+            if not self.topic:
                 print("Goodbye!")
                 break
+            
+            # Reset memory for new topic
+            self.memory = ConversationBufferMemory(memory_key="chat_history")
+            
+            # Step 1: Initial Explanation
+            explanation = self.explain_chain.run(topic=self.topic)
+            print("\nLet me explain", self.topic)
+            print(explanation)
+            
+            # Step 2: Check Understanding
+            while True:
+                understanding = input("\nDo you understand this explanation? (yes/no): ").lower()
                 
-            elif command == 'start':
-                # Step 1: Initial Explanation
-                explanation = self.explain_chain.run(topic=self.topic)
-                print("\nLet me explain", self.topic)
-                print(explanation)
+                if understanding == 'no':
+                    print("\nLet me explain it again in a different way...")
+                    explanation = self.explain_chain.run(topic=self.topic)
+                    print(explanation)
+                elif understanding == 'yes':
+                    break
+                else:
+                    print("Please answer with 'yes' or 'no'")
+            
+            # Step 3: Provide Examples
+            print("\nGreat! Let me share some examples...")
+            examples = self.example_chain.run(topic=self.topic)
+            print(examples)
+            
+            while True:
+                # Step 4: Ask what they want to do next
+                print("\nWhat would you like to do next?")
+                print("1. See more examples")
+                print("2. Take a quiz")
+                print("3. Start new topic")
+                print("4. End session")
                 
-                # Step 2: Check Understanding
-                while True:
-                    understanding = input("\nDo you understand this explanation? (yes/no): ").lower()
+                choice = input("Enter your choice (1/2/3/4): ")
+                
+                if choice == '1':
+                    print("\nHere are some more examples...")
+                    examples = self.example_chain.run(topic=self.topic)
+                    print(examples)
+                elif choice == '2':
+                    print("\nLet's test your understanding with a quiz!")
+                    quiz_result = self.conduct_quiz()
                     
-                    if understanding == 'no':
-                        print("\nLet me explain it again in a different way...")
-                        explanation = self.explain_chain.run(topic=self.topic)
-                        print(explanation)
-                    elif understanding == 'yes':
+                    print("\nWould you like to:")
+                    print("1. Continue with current topic")
+                    print("2. Start new topic")
+                    print("3. End session")
+                    
+                    end_choice = input("Enter your choice (1/2/3): ")
+                    if end_choice == '2':
                         break
-                    else:
-                        print("Please answer with 'yes' or 'no'")
-                
-                # Step 3: Provide Examples
-                print("\nGreat! Let me share some examples...")
-                examples = self.example_chain.run(topic=self.topic)
-                print(examples)
-                
-                while True:
-                    # Step 4: Ask what they want to do next
-                    print("\nWhat would you like to do next?")
-                    print("1. See more examples")
-                    print("2. Take a quiz")
-                    print("3. End lesson")
-                    
-                    choice = input("Enter your choice (1/2/3): ")
-                    
-                    if choice == '1':
-                        print("\nHere are some more examples...")
-                        examples = self.example_chain.run(topic=self.topic)
-                        print(examples)
-                    elif choice == '2':
-                        print("\nLet's test your understanding with a quiz!")
-                        quiz_result = self.conduct_quiz()
-                        
-                        print("\nWould you like to:")
-                        print("1. Continue learning")
-                        print("2. End lesson")
-                        
-                        end_choice = input("Enter your choice (1/2): ")
-                        if end_choice == '2':
-                            print("Goodbye!")
-                            return
-                        break
-                    elif choice == '3':
-                        print("Goodbye!")
+                    elif end_choice == '3':
                         return
-                    else:
-                        print("Invalid choice. Please enter 1, 2, or 3.")
+                elif choice == '3':
+                    break
+                elif choice == '4':
+                    print("Goodbye!")
+                    return
+                else:
+                    print("Invalid choice. Please enter 1, 2, 3, or 4.")
 
 # Create and run the teaching agent
 agent = TeachingAgent()
