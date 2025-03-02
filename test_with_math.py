@@ -33,182 +33,331 @@ class PersonalizedTeachingAgent(TeachingAgent):
         super().__init__()
         self.student_profile = None
         self.topic = None
+        self.curriculum = {'current_topic': None}
         
-        # Simplified prompts with single input
-        self.profile_prompt = PromptTemplate(
-            input_variables=["instruction"],
-            template="{instruction}"
+        # Initialize additional prompt templates
+        self.explain_prompt = PromptTemplate(
+            input_variables=["topic", "human_input", "profile"],
+            template="""
+            Explain {topic} in response to: {human_input}
+            
+            Student profile:
+            {profile}
+            
+            Tailor the explanation to match their learning style and keep within their attention span.
+            """
         )
         
-        self.personalized_example_prompt = PromptTemplate(
-            input_variables=["instruction"],
-            template="{instruction}"
+        self.example_prompt = PromptTemplate(
+            input_variables=["topic", "profile"],
+            template="""
+            Provide practical examples of {topic} for a student with the following profile:
+            {profile}
+            
+            Make examples relatable and appropriate for their grade level and learning style.
+            """
         )
         
-        self.personalized_quiz_prompt = PromptTemplate(
-            input_variables=["instruction"],
-            template="{instruction}"
-        )
-        
-        # Initialize chains
-        self.profile_chain = LLMChain(
-            llm=self.llm,
-            prompt=self.profile_prompt,
-            memory=self.memory
-        )
-        
-        self.personalized_example_chain = LLMChain(
-            llm=self.llm,
-            prompt=self.personalized_example_prompt,
-            memory=self.memory
-        )
-        
-        self.personalized_quiz_chain = LLMChain(
-            llm=self.llm,
-            prompt=self.personalized_quiz_prompt,
-            memory=self.memory
-        )
+        # Initialize chains dictionary
+        self.chains = {
+            'explain': LLMChain(
+                llm=self.llm,
+                prompt=self.explain_prompt,
+                memory=self.memory
+            ),
+            'example': LLMChain(
+                llm=self.llm,
+                prompt=self.example_prompt,
+                memory=self.memory
+            ),
+            'quiz': self.personalized_quiz_chain  # Reuse existing quiz chain
+        }
 
-    def format_profile_for_prompt(self):
-        """Format student profile as a string for prompt templates"""
+    def _interactive_learning_loop(self, topic: str):
+        """Manage interactive learning session"""
+        while True:
+            print("\nLearning Options:")
+            print("1. Ask a question")
+            print("2. See examples")
+            print("3. Try practice exercise")
+            print("4. Return to main menu")
+            
+            choice = input("Your choice: ")
+            
+            if choice == '1':
+                question = input("What's your question? ")
+                response = self.chains['explain'].run({
+                    'topic': topic,
+                    'human_input': question,
+                    'learning_style': self.user_profile['learning_style'],
+                    'difficulty_level': self.user_profile['difficulty_level'],
+                    'interests': self.user_profile['interests'],
+                    'strengths': self.user_profile['strengths']
+                })
+                print(response)
+                
+            elif choice == '2':
+                examples = self.chains['example'].run({
+                    'topic': topic,
+                    'human_input': topic,
+                    'learning_style': self.user_profile['learning_style'],
+                    'difficulty_level': self.user_profile['difficulty_level']
+                })
+                print("\nPractical Examples:")
+                print(examples)
+                
+            elif choice == '3':
+                score = self._conduct_quiz(topic)
+                self._update_learning_profile({
+                    'topic': topic,
+                    'score': score,
+                    'timestamp': datetime.now().isoformat(),
+                    'difficulty_level': self.user_profile['difficulty_level']
+                })
+            elif choice == '4':
+                break
+            else:
+                print("Invalid choice. Please try again.")
+   
+        
+    def handle_new_topic(self):
+        """Guide user through new topic learning with initial questions"""
+        self.topic = self.get_topic()
+        if not self.topic:
+            return
+            
         if not self.student_profile:
-            return None
+            self.create_student_profile()
+            
+        profile_text = self.format_profile_for_prompt()
         
-        return f"""
-- Grade Level: {self.student_profile.grade_level}
-- Difficulty Level: {self.student_profile.difficulty_level.value}
-- Learning Style: {self.student_profile.learning_style.value}
-- Preferred Subjects: {', '.join(self.student_profile.preferred_subjects)}
-- Attention Span: {self.student_profile.attention_span} minutes
-- Prior Knowledge: {self.student_profile.prior_knowledge or 'None specified'}
-        """.strip()
+        # Initial explanation
+        explanation = self.chains['explain'].run(
+            topic=self.topic,
+            human_input="Initial explanation request",
+            profile=profile_text
+        )
+        
+        print(f"\nLet's learn about {self.topic}!")
+        print(explanation)
+        
+        # Prompt to ask a question
+        while True:
+            print("\nDo you have any questions about this topic? (Enter 'no' to continue)")
+            question = input("Your question: ").strip()
+            
+            if question.lower() == 'no':
+                break
+            
+            # Generate response to question
+            response = self.chains['explain'].run(
+                topic=self.topic,
+                human_input=question,
+                profile=profile_text
+            )
+            print("\nAnswer:", response)
+            
+            # Check understanding
+            while True:
+                understanding = input("\nDoes this answer help you understand better? (yes/no): ").lower()
+                if understanding in ['yes', 'no']:
+                    break
+                print("Please answer with 'yes' or 'no'")
+            
+            if understanding == 'no':
+                print("\nLet me try to explain it differently...")
+                alternative_response = self.chains['explain'].run(
+                    topic=self.topic,
+                    human_input=f"Please explain {question} differently",
+                    profile=profile_text
+                )
+                print(alternative_response)
+        
+        # Start interactive learning loop
+        print("\nGreat! Let's continue with more learning activities.")
+        self.interactive_learning_loop(self.topic)
+        
+        
+    def _update_learning_profile(self, topic: str, quiz_success: bool):
+        """Update student profile based on learning progress"""
+        if not self.student_profile:
+            return
+            
+        # Simple difficulty adjustment based on quiz performance
+        if quiz_success:
+            print("\nGreat progress! Would you like to try a harder difficulty? (yes/no)")
+            if input().lower() == 'yes':
+                current_level = self.student_profile.difficulty_level
+                levels = list(DifficultyLevel)
+                current_index = levels.index(current_level)
+                if current_index < len(levels) - 1:
+                    self.student_profile.difficulty_level = levels[current_index + 1]
+                    print(f"Difficulty increased to {self.student_profile.difficulty_level.value}")
+        else:
+            print("\nWould you like to try an easier difficulty? (yes/no)")
+            if input().lower() == 'yes':
+                current_level = self.student_profile.difficulty_level
+                levels = list(DifficultyLevel)
+                current_index = levels.index(current_level)
+                if current_index > 0:
+                    self.student_profile.difficulty_level = levels[current_index - 1]
+                    print(f"Difficulty adjusted to {self.student_profile.difficulty_level.value}")
 
-    def create_explanation_instruction(self, topic, profile):
-        return f"""
-Adapt the explanation of {topic} for a student with the following profile:
-{profile}
-
-Tailor your explanation to match their learning style and keep within their attention span.
-Use grade-appropriate vocabulary and examples.
-        """.strip()
-
-    def create_example_instruction(self, topic, profile, chat_history):
-        return f"""
-Create examples of {topic} for a student with the following profile:
-{profile}
-
-Make the examples relatable and appropriate for their grade level and learning style.
-Previous conversation: {chat_history}
-        """.strip()
-
-    def create_quiz_instruction(self, topic, profile, chat_history):
-        return f"""
-Create a multiple choice question about {topic} for a student with the following profile:
-{profile}
-
-Structure your response exactly as follows:
-QUESTION: (grade-appropriate question)
-OPTIONS:
-a) (first option)
-b) (second option)
-c) (third option)
-CORRECT_ANSWER: (letter)
-EXPLANATION: (grade-appropriate explanation)
-HINT: (helpful hint matching their learning style)
-
-Previous conversation: {chat_history}
-        """.strip()
+    def ask_questions(self):
+        """Handle question-asking functionality"""
+        if not self.student_profile or not self.topic:
+            print("Error: Student profile or topic not set")
+            return
+            
+        profile_text = self.format_profile_for_prompt()
+        
+        while True:
+            print("\nWhat would you like to ask about", self.topic + "?")
+            print("(Type 'back' to return to previous menu)")
+            
+            question = input("Your question: ").strip()
+            
+            if question.lower() == 'back':
+                break
+            
+            # Generate response to question
+            response = self.chains['explain'].run(
+                topic=self.topic,
+                human_input=question,
+                profile=profile_text
+            )
+            print("\nAnswer:", response)
+            
+            # Check understanding
+            while True:
+                understanding = input("\nDoes this answer help you understand better? (yes/no): ").lower()
+                if understanding in ['yes', 'no']:
+                    break
+                print("Please answer with 'yes' or 'no'")
+            
+            if understanding == 'no':
+                print("\nLet me try to explain it differently...")
+                alternative_response = self.chains['explain'].run(
+                    topic=self.topic,
+                    human_input=f"Please explain {question} differently",
+                    profile=profile_text
+                )
+                print(alternative_response)
 
     def start_lesson(self):
-        """Override start_lesson to include personalization"""
+        """Modified start_lesson with improved flow control"""
         if not self.student_profile:
             self.create_student_profile()
         
         while True:
-            self.topic = self.get_topic()
+            result = None
             if not self.topic:
-                print("Goodbye!")
-                break
-            
-            # Reset memory for new topic
-            self.memory = ConversationBufferMemory(memory_key="chat_history")
-            
-            # Format profile for prompts
-            profile_text = self.format_profile_for_prompt()
-            
-            # Create and run explanation instruction
-            explanation_instruction = self.create_explanation_instruction(
-                self.topic, 
-                profile_text
-            )
-            explanation = self.profile_chain.run(instruction=explanation_instruction)
-            
-            print("\nLet me explain", self.topic)
-            print(explanation)
-            
-            # Check understanding
-            while True:
-                understanding = input("\nDo you understand this explanation? (yes/no): ").lower()
+                print("\nWhat would you like to do?")
+                print("1. Start new topic")
+                print("2. Update your profile")
+                print("3. End session")
                 
-                if understanding == 'no':
-                    print("\nLet me explain it differently, keeping in mind your learning style...")
-                    explanation = self.profile_chain.run(instruction=explanation_instruction)
-                    print(explanation)
-                elif understanding == 'yes':
-                    break
-                else:
-                    print("Please answer with 'yes' or 'no'")
-            
-            # Create and run example instruction
-            chat_history = self.memory.load_memory_variables({})["chat_history"]
-            example_instruction = self.create_example_instruction(
-                self.topic,
-                profile_text,
-                chat_history
-            )
-            
-            print("\nHere are some examples tailored to your interests and learning style...")
-            examples = self.personalized_example_chain.run(instruction=example_instruction)
-            print(examples)
-            
-            while True:
-                print("\nWhat would you like to do next?")
-                print("1. See more personalized examples")
-                print("2. Take a quiz at your level")
-                print("3. Start new topic")
-                print("4. Update your profile")
-                print("5. End session")
-                
-                choice = input("Enter your choice (1/2/3/4/5): ")
+                choice = input("Enter your choice (1/2/3): ")
                 
                 if choice == '1':
-                    print("\nHere are more examples aligned with your learning style...")
-                    examples = self.personalized_example_chain.run(instruction=example_instruction)
-                    print(examples)
+                    self.handle_new_topic()
                 elif choice == '2':
-                    print("\nLet's test your understanding with a quiz at your level!")
-                    quiz_result = self.conduct_personalized_quiz()
-                    
-                    print("\nWould you like to:")
-                    print("1. Continue with current topic")
-                    print("2. Start new topic")
-                    print("3. End session")
-                    
-                    end_choice = input("Enter your choice (1/2/3): ")
-                    if end_choice == '2':
-                        break
-                    elif end_choice == '3':
-                        return
-                elif choice == '3':
-                    break
-                elif choice == '4':
                     self.create_student_profile()
-                    profile_text = self.format_profile_for_prompt()
-                elif choice == '5':
+                elif choice == '3':
                     print("Goodbye!")
-                    return
+                    break
                 else:
-                    print("Invalid choice. Please enter 1, 2, 3, 4, or 5.")
+                    print("Invalid choice. Please enter 1, 2, or 3.")
+            else:
+                print("\nWhat would you like to do next?")
+                print("1. Ask a question")
+                print("2. Continue with current topic")
+                print("3. Start new topic")
+                print("4. End session")
+                
+                choice = input("Enter your choice (1/2/3/4): ")
+                
+                if choice == '1':
+                    self.ask_questions()
+                elif choice == '2':
+                    self.interactive_learning_loop(self.topic)
+                elif choice == '3':
+                    self.topic = None  # Reset topic
+                    continue
+                elif choice == '4':
+                    print("Goodbye!")
+                    break
+                else:
+                    print("Invalid choice. Please enter 1, 2, 3, or 4.")
+
+    def _parse_quiz_response(self, response: str) -> dict:
+        """Parse raw quiz response into structured format"""
+        quiz_data = {
+            "question": "",
+            "options": {},
+            "correct_answer": "",
+            "explanation": "",
+            "hint": "",
+            "difficulty": 1  # Default difficulty level
+        }
+        
+        current_section = None
+        option_key = None
+        
+        for line in response.split('\n'):
+            line = line.strip()
+            if not line:
+                continue
+                
+            # Section headers
+            if line.lower().startswith("question:"):
+                current_section = "question"
+                quiz_data["question"] = line[len("question:"):].strip()
+            elif line.lower().startswith("options:"):
+                current_section = "options"
+            elif line.lower().startswith("correct_answer:"):
+                current_section = "correct_answer"
+                quiz_data["correct_answer"] = line[len("correct_answer:"):].strip().lower()
+            elif line.lower().startswith("explanation:"):
+                current_section = "explanation"
+                quiz_data["explanation"] = line[len("explanation:"):].strip()
+            elif line.lower().startswith("hint:"):
+                current_section = "hint"
+                quiz_data["hint"] = line[len("hint:"):].strip()
+            elif line.lower().startswith("difficulty:"):
+                quiz_data["difficulty"] = int(line[len("difficulty:"):].strip())
+                
+            # Handle content
+            elif current_section == "question":
+                quiz_data["question"] += " " + line
+            elif current_section == "options" and ')' in line:
+                key, text = line.split(')', 1)
+                option_key = key.strip().lower()
+                quiz_data["options"][option_key] = text.strip()
+            elif current_section == "options" and option_key:
+                quiz_data["options"][option_key] += " " + line
+            elif current_section == "explanation":
+                quiz_data["explanation"] += " " + line
+            elif current_section == "hint":
+                quiz_data["hint"] += " " + line
+                
+        # Cleanup and validation
+        quiz_data["question"] = quiz_data["question"].strip()
+        quiz_data["explanation"] = quiz_data["explanation"].strip()
+        quiz_data["hint"] = quiz_data["hint"].strip()
+        
+        # Ensure all required fields are present
+        if not all([quiz_data["question"], quiz_data["options"], quiz_data["correct_answer"]]):
+            print("❌ Invalid quiz format: Missing required fields.")
+            return None
+            
+        # Ensure correct_answer is one of the options
+        if quiz_data["correct_answer"] not in quiz_data["options"]:
+            print(f"❌ Invalid correct_answer: {quiz_data['correct_answer']} not in options.")
+            return None
+            
+        return quiz_data
+
 
     def conduct_personalized_quiz(self):
         """Conduct a quiz tailored to the student's profile"""
@@ -230,32 +379,48 @@ Previous conversation: {chat_history}
         )
         quiz_response = self.personalized_quiz_chain.run(instruction=quiz_instruction)
         
-        quiz_data = self.parse_quiz_response(quiz_response)
+        # Changed from parse_quiz_response to _parse_quiz_response
+        quiz_data = self._parse_quiz_response(quiz_response)
         
+        # Added error handling for invalid quiz data
+        if not quiz_data:
+            print("Sorry, there was an error generating the quiz. Let's try again.")
+            return False
+
         print("\nQuiz Question (Difficulty: {}):"
-              .format(self.student_profile.difficulty_level.value))
+            .format(self.student_profile.difficulty_level.value))
         print(quiz_data['question'])
         print("\nOptions:")
         for option, text in quiz_data['options'].items():
             print(f"{option}) {text}")
         
         # First attempt
-        answer = input("\nYour answer (a/b/c): ").lower()
+        while True:
+            answer = input("\nYour answer (a/b/c): ").lower().strip()
+            if answer in ['a', 'b', 'c']:
+                break
+            print("Please enter 'a', 'b', or 'c'")
         
         if answer == quiz_data['correct_answer']:
             print("\nCorrect! Well done!")
             print("Explanation:", quiz_data['explanation'])
             return True
         else:
-            print("\nThat's not quite right. Would you like a hint? (yes/no)")
-            want_hint = input().lower()
+            while True:
+                want_hint = input("\nThat's not quite right. Would you like a hint? (yes/no): ").lower().strip()
+                if want_hint in ['yes', 'no']:
+                    break
+                print("Please answer with 'yes' or 'no'")
             
             if want_hint == 'yes':
                 print("\nHint:", quiz_data['hint'])
             
             # Second attempt
-            print("\nTry one more time!")
-            answer = input("Your answer (a/b/c): ").lower()
+            while True:
+                answer = input("\nTry one more time! Your answer (a/b/c): ").lower().strip()
+                if answer in ['a', 'b', 'c']:
+                    break
+                print("Please enter 'a', 'b', or 'c'")
             
             if answer == quiz_data['correct_answer']:
                 print("\nCorrect! You got it on the second try!")
@@ -265,8 +430,8 @@ Previous conversation: {chat_history}
                 print("\nIncorrect. The correct answer was:", quiz_data['correct_answer'])
                 print("Explanation:", quiz_data['explanation'])
                 return False
-
-    
+        
+        
     def create_student_profile(self):
         """Interactive method to create a student profile"""
         print("\nLet's create your learning profile!")

@@ -1,0 +1,25 @@
+{
+    "username": "him",
+    "learning_style": "visual",
+    "difficulty_level": "beginner",
+    "interests": [
+        "1"
+    ],
+    "strengths": [
+        "1"
+    ],
+    "weaknesses": [
+        "1"
+    ],
+    "preferred_subjects": [],
+    "learning_goals": [
+        "1"
+    ],
+    "session_history": [],
+    "quiz_performance": {},
+    "topic_mastery": {},
+    "learning_pace": "moderate",
+    "preferred_time_of_day": null,
+    "session_duration": 1,
+    "visualization_preference": "charts"
+}

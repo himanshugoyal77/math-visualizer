@@ -1,0 +1,27 @@
+{
+    "profile": {
+        "username": "himanshu",
+        "learning_style": "visual",
+        "difficulty_level": "beginner",
+        "interests": [
+            ""
+        ],
+        "strengths": [
+            ""
+        ],
+        "weaknesses": [],
+        "learning_goals": [
+            "1"
+        ],
+        "session_history": [],
+        "quiz_performance": {},
+        "topic_mastery": {},
+        "adaptive_plan": {}
+    },
+    "curriculum": {
+        "current_topic": null,
+        "topic_queue": [],
+        "learning_pace": 1.0,
+        "last_reinforcement": null
+    }
+}

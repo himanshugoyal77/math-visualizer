@@ -247,7 +247,8 @@ class TeachingAgent:
     def start_lesson(self):
         while True:
             # Get the topic from user
-            self.topic = self.get_topic()
+            self.topic = input("\nWhat would you like to learn about? ").strip()
+            print("Topic:", self.topic)
             if not self.topic:
                 print("Goodbye!")
                 break
@@ -268,7 +269,7 @@ class TeachingAgent:
             user_input = input("Your question: ").strip()
             
             # Get and display explanation
-            explanation = self.get_explanation(self.topic, user_input)
+            explanation = self.get_explanation(self.topic, user_input+ ' ' + self.topic)
             print("\nLet me explain:", self.topic)
             print(explanation)
             
@@ -315,7 +316,7 @@ class TeachingAgent:
                 print(examples)
             elif choice == '2':
                 user_input = input("\nWhat's your question? ")
-                explanation = self.get_explanation(self.topic, user_input)
+                explanation = self.get_explanation(self.topic, user_input + self.topic)
                 print(explanation)
             elif choice == '3':
                 self.conduct_quiz(self.topic, "Generate a quiz")

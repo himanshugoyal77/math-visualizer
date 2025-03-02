@@ -9,6 +9,8 @@ from io import StringIO
 import contextlib
 import time
 import random
+import json
+from datetime import datetime
 
 class TeachingAgent:
     def __init__(self):
@@ -155,6 +157,27 @@ def extract_visualization(response):
         code_part = response.split('```python')[1].split('```')[0].strip()
         return code_part
     return None
+
+def save_feedback(feedback_data):
+    """Save feedback to a JSON file"""
+    try:
+        with open("feedback.json", "a") as f:
+            json.dump(feedback_data, f)
+            f.write("\n")
+    except Exception as e:
+        st.error(f"Error saving feedback: {str(e)}")
+
+def load_feedback():
+    """Load feedback from a JSON file"""
+    try:
+        with open("feedback.json", "r") as f:
+            feedback_data = [json.loads(line) for line in f]
+        return feedback_data
+    except FileNotFoundError:
+        return []
+    except Exception as e:
+        st.error(f"Error loading feedback: {str(e)}")
+        return []
 
 def main():
     st.set_page_config(page_title="AI Teaching Assistant", layout="wide")
@@ -391,7 +414,7 @@ def main():
                         # Ask if they want to try another question
                         if st.button("Try Another Question"):
                             st.session_state.quiz_data = None
-                            st.experimental_rerun()
+                            st.rerun()
         
         with tab3:
             st.write("Ready to explore a new topic?")
@@ -405,7 +428,7 @@ def main():
                 st.session_state.learning_progress = 0
                 st.session_state.examples_shown = 0
                 st.session_state.quiz_attempts = 0
-                st.experimental_rerun()
+                st.rerun()
         
         # Feedback section
         if not st.session_state.feedback_submitted:
@@ -414,8 +437,30 @@ def main():
                 feedback_text = st.text_area("What could we do better?")
                 rating = st.slider("Rate your overall experience", 1, 5, 3)
                 if st.button("Submit Feedback"):
+                    feedback_data = {
+                        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                        "rating": rating,
+                        "feedback": feedback_text
+                    }
+                    save_feedback(feedback_data)
                     st.session_state.feedback_submitted = True
                     st.success("Thank you for your feedback! 🙏")
+        
+        # Display feedback statistics (admin view)
+        if st.checkbox("Show Feedback Statistics (Admin)"):
+            feedback_data = load_feedback()
+            if feedback_data:
+                st.subheader("📊 Feedback Statistics")
+                avg_rating = sum(f["rating"] for f in feedback_data) / len(feedback_data)
+                st.write(f"Average Rating: {avg_rating:.2f} ⭐")
+                
+                st.write("Recent Feedback:")
+                for feedback in feedback_data[-5:]:
+                    st.write(f"**{feedback['timestamp']}** - Rating: {feedback['rating']} ⭐")
+                    st.write(feedback['feedback'])
+                    st.write("---")
+            else:
+                st.info("No feedback data available yet.")
 
 if __name__ == "__main__":
     main()
