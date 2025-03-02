@@ -23,6 +23,10 @@ if "pdf_display_page" not in st.session_state:
     st.session_state.pdf_display_page = 0
 if "pdf_bytes" not in st.session_state:
     st.session_state.pdf_bytes = None
+if "highlighted_text" not in st.session_state:
+    st.session_state.highlighted_text = []  # Store text to highlight
+if "last_query" not in st.session_state:
+    st.session_state.last_query = None
 
 # API keys - in production, these should be stored in environment variables
 @st.cache_data
@@ -77,7 +81,7 @@ else:
     if not clients:
         st.stop()
 
-# Function to extract text from PDF with chunking
+# Function to extract text from PDF with chunking and store page text mapping
 def extract_text_from_pdf(pdf_file, chunk_size=1000, chunk_overlap=200):
     try:
         # Save the PDF bytes for display
@@ -93,38 +97,76 @@ def extract_text_from_pdf(pdf_file, chunk_size=1000, chunk_overlap=200):
             "total_pages": len(doc)
         }
         
-        # Extract full text
+        # Extract full text and store page content separately
         full_text = ""
+        page_texts = {}  # Store text for each page
+        
         for page_num, page in enumerate(doc):
             text = page.get_text("text")
-            full_text += f"Page {page_num+1}: {text}\n\n"
+            page_header = f"Page {page_num+1}: "
+            full_text += page_header + text + "\n\n"
+            
+            # Store raw page text without header for highlighting
+            page_texts[page_num] = text
         
         # Create chunks with overlap
         chunks = []
+        current_page = 0
+        page_starts = [0]  # Track starting indices of pages
+        
+        # Build page start positions
+        for page_num in range(len(doc)):
+            page_starts.append(len(full_text))
+            full_text += f"Page {page_num+1}: " + doc[page_num].get_text("text") + "\n\n"
+        
+        # Create chunks with page metadata
         words = full_text.split()
-        
         for i in range(0, len(words), chunk_size - chunk_overlap):
-            chunk = " ".join(words[i:i + chunk_size])
-            if chunk:  # Ensure we don't add empty chunks
-                chunks.append(chunk)
-        
-        return {"text": full_text, "chunks": chunks, "metadata": metadata, "pdf_bytes": pdf_bytes}
+            chunk_text = " ".join(words[i:i + chunk_size])
+            
+            # Find which page this chunk starts in
+            chunk_start = len(" ".join(words[:i]))
+            for page_num in range(len(page_starts)-1):
+                if page_starts[page_num] <= chunk_start < page_starts[page_num+1]:
+                    current_page = page_num
+                    break
+            
+            chunks.append({
+                "text": chunk_text,
+                "start_page": current_page
+            })
+            
+        return {
+            "text": full_text,
+            "chunks": chunks,  # Now chunks have text and start_page
+            "metadata": metadata,
+            "pdf_bytes": pdf_bytes,
+            "page_texts": page_texts
+        }
     
     except Exception as e:
         st.error(f"Error extracting text from PDF: {str(e)}")
         return None
 
-# Function to display PDF
-def display_pdf(pdf_bytes, page=0):
+# Function to display PDF with highlighted text
+def display_pdf(pdf_bytes, page=0, highlighted_text=None):
     try:
         doc = fitz.open(stream=pdf_bytes, filetype="pdf")
         total_pages = len(doc)
         
         # Ensure page is within bounds
-        page = max(0, min(page, total_pages - 1))
+        page = int(max(0, min(page, total_pages - 1)))
         
         # Get the current page
         pdf_page = doc[page]
+        
+        # Add highlights if specified for this page
+        if highlighted_text:
+            for text in highlighted_text:
+                text_instances = pdf_page.search_for(text)
+                for inst in text_instances:
+                    highlight = pdf_page.add_highlight_annot(inst)
+                    highlight.update()
         
         # Render page to an image (PNG)
         pix = pdf_page.get_pixmap(matrix=fitz.Matrix(2, 2))  # 2x zoom for better resolution
@@ -154,9 +196,9 @@ def generate_embedding(text: str) -> List[float]:
         return None
 
 # Function to store document chunks in Pinecone
-def store_text_in_pinecone(chunks: List[str], metadata: Dict[str, Any], document_id: str) -> bool:
+def store_text_in_pinecone(chunks: List[Dict], metadata: Dict[str, Any], document_id: str, page_texts: Dict[int, str]) -> bool:
     try:
-        batch_size = 100  # Process in batches to avoid timeouts
+        batch_size = 100
         
         for i in range(0, len(chunks), batch_size):
             batch_chunks = chunks[i:i + batch_size]
@@ -164,29 +206,28 @@ def store_text_in_pinecone(chunks: List[str], metadata: Dict[str, Any], document
             vectors = []
             for j, chunk in enumerate(batch_chunks):
                 chunk_id = f"{document_id}_chunk_{i+j}"
-                embedding = generate_embedding(chunk)
+                embedding = generate_embedding(chunk["text"])
                 
                 if embedding:
-                    # Include both the chunk text and document metadata
                     chunk_metadata = {
-                        "text": chunk,
-                        "page": chunk.split("\n")[0] if chunk.startswith("Page") else "Unknown",
+                        "text": chunk["text"],
                         "document_title": metadata["title"],
                         "file_name": metadata["file_name"],
-                        "document_id": document_id,  # Add document_id to metadata for filtering
-                        "custom_name": metadata["custom_name"]  # Add custom name for display
+                        "document_id": document_id,
+                        "custom_name": metadata["custom_name"],
+                        "start_page": chunk["start_page"]  # Use tracked page number
                     }
                     vectors.append((chunk_id, embedding, chunk_metadata))
             
             if vectors:
                 clients["index"].upsert(vectors=vectors)
                 
+        metadata["page_texts"] = page_texts
         return True
     
     except Exception as e:
         st.error(f"Error storing chunks in Pinecone: {str(e)}")
         return False
-
 # Function to delete document from Pinecone by document_id
 def delete_document_from_pinecone(document_id: str) -> bool:
     try:
@@ -225,6 +266,19 @@ def query_pinecone(question: str, top_k: int = 5, document_ids: List[str] = None
         st.error(f"Error querying Pinecone: {str(e)}")
         return []
 
+# Extract key sentences from chunk text
+def extract_key_sentences(text, max_sentences=3):
+    # Simple sentence extraction based on periods
+    sentences = []
+    for part in text.split("\n"):
+        for sentence in part.split(". "):
+            clean_sentence = sentence.strip()
+            if clean_sentence and len(clean_sentence) > 20:  # Avoid very short fragments
+                sentences.append(clean_sentence)
+    
+    # Return up to max_sentences
+    return sentences[:max_sentences]
+
 # Function to generate answer with Cohere
 def generate_answer(question: str, relevant_chunks: List[Dict[str, Any]]) -> str:
     try:
@@ -235,22 +289,38 @@ def generate_answer(question: str, relevant_chunks: List[Dict[str, Any]]) -> str
         sources = set([f"{chunk.metadata.get('custom_name', chunk.metadata.get('document_title', 'Unknown document'))}" 
                      for chunk in relevant_chunks])
         
-        # Extract page numbers for navigation
+        # Extract page numbers for navigation and text for highlighting
         page_info = {}
+        highlights = {}
+        
+        highlights = {}
+        page_info = {}
+        
         for chunk in relevant_chunks:
-            page_text = chunk.metadata.get("page", "")
-            if page_text.startswith("Page "):
-                try:
-                    # Extract page number from "Page X: ..."
-                    page_num = int(page_text.split(":")[0].replace("Page ", "")) - 1  # 0-indexed
-                    doc_id = chunk.metadata.get("document_id")
-                    doc_name = chunk.metadata.get("custom_name")
-                    if doc_id not in page_info:
-                        page_info[doc_id] = {"name": doc_name, "pages": []}
-                    if page_num not in page_info[doc_id]["pages"]:
-                        page_info[doc_id]["pages"].append(page_num)
-                except:
-                    pass
+            doc_id = chunk.metadata.get("document_id")
+            page_num = chunk.metadata.get("start_page", 0)
+            
+            # Store highlight information
+            if doc_id not in highlights:
+                highlights[doc_id] = {}
+            if page_num not in highlights[doc_id]:
+                highlights[doc_id][page_num] = []
+            
+            # Extract key sentences from chunk text
+            key_sentences = extract_key_sentences(chunk.metadata["text"])
+            highlights[doc_id][page_num].extend(key_sentences)
+            
+            # Store page info for navigation
+            if doc_id not in page_info:
+                page_info[doc_id] = {
+                    "name": chunk.metadata.get("custom_name"),
+                    "pages": set()
+                }
+            page_info[doc_id]["pages"].add(page_num)
+        
+        # Convert page sets to sorted lists
+        for doc_id in page_info:
+            page_info[doc_id]["pages"] = sorted(page_info[doc_id]["pages"])
         
         # Construct prompt for Cohere
         prompt = f"""You are a helpful assistant answering questions based on the provided document.
@@ -283,11 +353,11 @@ Please provide a comprehensive answer based ONLY on the information in the docum
                 page_refs = ", ".join([f"page {p+1}" for p in sorted(info["pages"])])
                 sources_text += f" ({page_refs})"
         
-        return answer + sources_text, page_info
+        return answer + sources_text, page_info, highlights
     
     except Exception as e:
         st.error(f"Error generating answer: {str(e)}")
-        return "Sorry, I encountered an error while generating your answer.", {}
+        return "Sorry, I encountered an error while generating your answer.", {}, {}
 
 # Sidebar for document management
 with st.sidebar:
@@ -311,7 +381,12 @@ with st.sidebar:
                     pdf_data['metadata']['custom_name'] = custom_name
                     
                     # Store chunks in Pinecone with document_id
-                    success = store_text_in_pinecone(pdf_data['chunks'], pdf_data['metadata'], document_id)
+                    success = store_text_in_pinecone(
+                        pdf_data['chunks'], 
+                        pdf_data['metadata'], 
+                        document_id,
+                        pdf_data['page_texts']
+                    )
                     
                     if success:
                         # Store document info in session state
@@ -321,7 +396,8 @@ with st.sidebar:
                             "title": pdf_data['metadata']['title'],
                             "chunks": len(pdf_data['chunks']),
                             "pages": pdf_data['metadata']['total_pages'],
-                            "pdf_bytes": pdf_data['pdf_bytes']
+                            "pdf_bytes": pdf_data['pdf_bytes'],
+                            "page_texts": pdf_data['page_texts']  # Store page texts
                         }
                         
                         # Set as current PDF
@@ -329,6 +405,7 @@ with st.sidebar:
                         st.session_state.current_pdf_name = custom_name
                         st.session_state.pdf_bytes = pdf_data['pdf_bytes']
                         st.session_state.pdf_display_page = 0
+                        st.session_state.highlighted_text = []  # Clear any highlights
                         
                         st.success(f"PDF '{custom_name}' processed successfully!")
                         st.rerun()
@@ -351,6 +428,7 @@ with st.sidebar:
                     st.session_state.current_pdf_name = doc_name
                     st.session_state.pdf_bytes = doc_info["pdf_bytes"]
                     st.session_state.pdf_display_page = 0
+                    st.session_state.highlighted_text = []  # Clear any highlights
                     st.rerun()
             
             with col2:
@@ -367,6 +445,7 @@ with st.sidebar:
                             st.session_state.current_pdf = None
                             st.session_state.current_pdf_name = None
                             st.session_state.pdf_bytes = None
+                            st.session_state.highlighted_text = []
                         
                         del st.session_state.processed_files[doc_id]
                         st.rerun()
@@ -382,6 +461,7 @@ with st.sidebar:
         st.session_state.current_pdf = None
         st.session_state.current_pdf_name = None
         st.session_state.pdf_bytes = None
+        st.session_state.highlighted_text = []
         st.rerun()
     
     # Settings section
@@ -389,6 +469,7 @@ with st.sidebar:
     chunk_size = st.slider("Chunk Size (words)", 300, 2000, 1000)
     chunk_overlap = st.slider("Chunk Overlap (words)", 50, 500, 200)
     top_k = st.slider("Results to Retrieve", 3, 10, 5)
+    highlight_enabled = st.checkbox("Enable Text Highlighting", value=True)
 
 # Main content area with two columns
 col1, col2 = st.columns([1, 1])
@@ -401,8 +482,19 @@ with col1:
         # Display document name
         st.header(st.session_state.current_pdf_name)
         
-        # PDF display
-        total_pages = display_pdf(st.session_state.pdf_bytes, st.session_state.pdf_display_page)
+        # Get current page highlights
+        current_highlights = []
+        if highlight_enabled and st.session_state.current_pdf in st.session_state.highlighted_text:
+            page_highlights = st.session_state.highlighted_text[st.session_state.current_pdf]
+            if st.session_state.pdf_display_page in page_highlights:
+                current_highlights = page_highlights[st.session_state.pdf_display_page]
+        
+        # PDF display with highlights
+        total_pages = display_pdf(
+            st.session_state.pdf_bytes, 
+            st.session_state.pdf_display_page,
+            current_highlights if highlight_enabled else None
+        )
         
         # Page navigation
         if total_pages > 1:
@@ -486,12 +578,35 @@ with col2:
                 if not filter_doc_ids and query_option != "All Documents":
                     st.warning("Please select at least one document to search.")
                 else:
+                    # Store the current query
+                    st.session_state.last_query = question
+                    
                     # Retrieve relevant chunks
                     results = query_pinecone(question, top_k, filter_doc_ids)
                     
                     if results:
                         # Generate answer
-                        answer, page_info = generate_answer(question, results)
+                        answer, page_info, highlights = generate_answer(question, results)
+                        
+                        # Store highlights for display
+                        if highlight_enabled:
+                            st.session_state.highlighted_text = highlights
+                            
+                            # Automatically show the first highlighted page if we're in current document mode
+                            if len(page_info) == 1:
+                                doc_id = list(page_info.keys())[0]
+                                if doc_id == st.session_state.current_pdf:
+                                    first_page = list(page_info[doc_id]["pages"])[0]
+                                    st.session_state.pdf_display_page = first_page
+                
+                # If answer references different document, switch to it
+                            elif len(page_info) > 0:
+                                doc_id = list(page_info.keys())[0]
+                                if doc_id in st.session_state.processed_files:
+                                    st.session_state.current_pdf = doc_id
+                                    st.session_state.current_pdf_name = page_info[doc_id]["name"]
+                                    st.session_state.pdf_bytes = st.session_state.processed_files[doc_id]["pdf_bytes"]
+                                    st.session_state.pdf_display_page = list(page_info[doc_id]["pages"])[0]
                         
                         # Display answer
                         st.markdown("### 💡 Answer:")
