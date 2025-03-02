@@ -195,6 +195,7 @@ class TeachingAgent:
                 self.set_time_availability()
                 self.save_progress()
                 st.success(f"Profile created for {username}.")
+                st.session_state['page'] = 'main'  # Navigate back to the main page
             else:
                 st.error("Username cannot be empty.")
         except Exception as e:
@@ -315,6 +316,7 @@ class TeachingAgent:
                 self.preferred_language = self.user_progress[username]["preferred_language"]
                 self.time_availability = self.user_progress[username]["time_availability"]
                 st.success(f"Welcome back, {username}!")
+                st.session_state['page'] = 'main'  # Navigate back to the main page
             else:
                 st.error("User not found. Please create a new profile.")
         except Exception as e:
@@ -573,23 +575,28 @@ class TeachingAgent:
 def main():
     st.title("Personalized Tutor AI")
     
+    # Initialize session state for page navigation
+    if 'page' not in st.session_state:
+        st.session_state['page'] = 'profile_creation'
+    
     agent = TeachingAgent()
     
-    # User profile management
-    st.sidebar.title("User Profile")
-    profile_choice = st.sidebar.radio(
-        "Choose an option:",
-        options=["Create new profile", "Select existing profile"]
-    )
+    # Navigation
+    if st.session_state['page'] == 'profile_creation':
+        st.sidebar.title("User Profile")
+        profile_choice = st.sidebar.radio(
+            "Choose an option:",
+            options=["Create new profile", "Select existing profile"]
+        )
+        
+        if profile_choice == "Create new profile":
+            agent.create_user_profile()
+        elif profile_choice == "Select existing profile":
+            agent.select_user_profile()
     
-    if profile_choice == "Create new profile":
-        agent.create_user_profile()
-    elif profile_choice == "Select existing profile":
-        agent.select_user_profile()
-    
-    # Start lesson
-    if agent.current_user:
-        agent.start_lesson()
+    elif st.session_state['page'] == 'main':
+        if agent.current_user:
+            agent.start_lesson()
 
 if __name__ == "__main__":
     main()
